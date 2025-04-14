@@ -255,6 +255,98 @@ class DDIM_Sampler(object):
         else:
             x_prev = a_prev.sqrt() * pred_x0 + dir_xt + noise
             return x_prev
+        
+
+    @torch.no_grad()
+    def p_sample_ddim_depth(self, text_embeddings, diffusion_model, controlnet, controlnet_cond_input, x, c, t, index, repeat_noise=False, use_original_steps=False, quantize_denoised=False,
+                      temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None,
+                      unconditional_guidance_scale=1., unconditional_conditioning=None,
+                      dynamic_threshold=None, return_all=False):
+        b, *_, device = *x.shape, x.device
+        alphas = self.model.alphas_cumprod if use_original_steps else self.ddim_alphas
+        alphas_prev = self.model.alphas_cumprod_prev if use_original_steps else self.ddim_alphas_prev
+        sqrt_one_minus_alphas = self.model.sqrt_one_minus_alphas_cumprod if use_original_steps else self.ddim_sqrt_one_minus_alphas
+        sigmas = self.model.ddim_sigmas_for_original_num_steps if use_original_steps else self.ddim_sigmas
+        # select parameters corresponding to the currently considered timestep
+        a_t = torch.full((b, 1, 1, 1), alphas[index], device=device)
+        a_prev = torch.full((b, 1, 1, 1), alphas_prev[index], device=device)
+        sigma_t = torch.full((b, 1, 1, 1), sigmas[index], device=device)
+        sqrt_one_minus_at = torch.full((b, 1, 1, 1), sqrt_one_minus_alphas[index], device=device)
+
+        if unconditional_conditioning is None or unconditional_guidance_scale == 1.:
+            model_output = self.model.apply_model(x, t, c, step=index)
+        else:
+            x_in = torch.cat([x] * 2)
+            t_in = torch.cat([t] * 2)
+            if isinstance(c, dict):
+                assert isinstance(unconditional_conditioning, dict)
+                c_in = dict()
+                for k in c:
+                    if isinstance(c[k], list):
+                        c_in[k] = [torch.cat([
+                            unconditional_conditioning[k][i],
+                            c[k][i]]) for i in range(len(c[k]))]
+                    else:
+                        c_in[k] = torch.cat([
+                            unconditional_conditioning[k],
+                            c[k]])
+            elif isinstance(c, list):
+                c_in = list()
+                assert isinstance(unconditional_conditioning, list)
+                for i in range(len(c)):
+                    c_in.append(torch.cat([unconditional_conditioning[i], c[i]]))
+            else:
+                c_in = torch.cat([unconditional_conditioning, c])
+            # model_uncond, model_t = self.model.apply_model(x_in, t_in, c_in, step=index).chunk(2)
+            # model_output = model_uncond + unconditional_guidance_scale * (model_t - model_uncond)
+
+            ###################################################
+            # depth conditioning
+            ###################################################
+            unet_cross_attention_kwargs = {'scale': 0}
+            conditioning_scale = 1.0
+            controlnet_output = controlnet(x_in.to(torch.float16), t, encoder_hidden_states=text_embeddings, controlnet_cond=controlnet_cond_input, conditioning_scale=conditioning_scale, guess_mode=False, return_dict=True)
+            noise_pred = diffusion_model.unet(x_in.to(torch.float16), t, encoder_hidden_states=text_embeddings, cross_attention_kwargs=unet_cross_attention_kwargs, down_block_additional_residuals=controlnet_output.down_block_res_samples, mid_block_additional_residual=controlnet_output.mid_block_res_sample).sample
+            model_uncond, model_t = noise_pred.chunk(2)
+            model_output = model_uncond + unconditional_guidance_scale * (model_t - model_uncond)
+            ###################################################
+            # depth conditioning
+            ###################################################
+
+
+        if self.model.parameterization == "v":
+            e_t = self.model.predict_eps_from_z_and_v(x, t, model_output)
+        else:
+            e_t = model_output
+
+        if score_corrector is not None:
+            assert self.model.parameterization == "eps", 'not implemented'
+            e_t = score_corrector.modify_score(self.model, e_t, x, t, c, **corrector_kwargs)
+
+        # current prediction for x_0
+        if self.model.parameterization != "v":
+            pred_x0 = (x - sqrt_one_minus_at * e_t) / a_t.sqrt()
+        else:
+            pred_x0 = self.model.predict_start_from_z_and_v(x, t, model_output)
+
+        if quantize_denoised:
+            pred_x0, _, *_ = self.model.first_stage_model.quantize(pred_x0)
+
+        if dynamic_threshold is not None:
+            raise NotImplementedError()
+
+        # direction pointing to x_t
+        dir_xt = (1. - a_prev - sigma_t ** 2).sqrt() * e_t
+        noise = sigma_t * noise_like(x.shape, device, repeat_noise) * temperature
+        if noise_dropout > 0.:
+            noise = torch.nn.functional.dropout(noise, p=noise_dropout)
+
+        if return_all:
+            return a_prev, pred_x0, e_t
+        else:
+            x_prev = a_prev.sqrt() * pred_x0 + dir_xt + noise
+            return x_prev
+        
 
     @torch.no_grad()
     def encode(self, x0, cond, t_enc, use_original_steps=False, return_intermediates=None,

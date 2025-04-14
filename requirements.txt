@@ -2,6 +2,9 @@ einops==0.3.0
 pytorch_lightning==1.4.2
 omegaconf==2.1.1
 torchmetrics==0.6
-transformers==4.19.2
+transformers==4.33.2
 open-clip-torch==2.7.0
 pillow
+
+huggingface-hub==0.21.0
+diffusers==0.25.0
