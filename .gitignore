@@ -178,3 +178,5 @@ outputs/
 openai/
 
 models/
+
+latent.pt
