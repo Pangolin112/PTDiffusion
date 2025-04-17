@@ -47,6 +47,20 @@ def load_ref_img(img_path, contrast=2., add_noise=False, noise_value=0.05):
     return img_tensor
 
 
+def load_ref_img_grayscale(img_path, add_noise=False, noise_value=0.05):
+    img = Image.open(img_path).resize((H, W))
+    img = np.array(img)
+    if len(img.shape) == 2:
+        print('Image is grayscale, stack the channels!')
+        img = np.stack([img, img, img], axis=-1)
+    img = (img.astype(np.float32) / 127.5) - 1.0           # -1 ~ 1
+    img_tensor = torch.from_numpy(img).permute(2, 0, 1)[None, ...].cuda()   # 1, 3, 512, 512
+    if add_noise:
+        noise = (torch.rand_like(img_tensor) - 0.5) / 0.5      # -1 ~ 1
+        img_tensor = (1 - noise_value) * img_tensor + noise_value * noise
+    return img_tensor
+
+
 def inversion(img_tensor):
     if os.path.exists('latent.py'):
         os.remove('latent.py')
@@ -85,7 +99,8 @@ def sample_illusion_image(latent, text_prompt, decode_steps=100, direct_transfer
 # image_name = 'binary_image_TUM.jpg'
 # image_name = 'black_dog.jpg'
 # image_name = 'yellow_dog.jpg'
-image_name = 'depth_scene.png'
+# image_name = 'depth_scene.png'
+image_name = 'binary_image_TUM.png'
 
 image_path = 'test_img/' + image_name
 
@@ -93,11 +108,15 @@ contrast = 2 # default value for face1 and face2
 # contrast = 1
 # contrast = 3
 
-inversion(load_ref_img(image_path, contrast=contrast, add_noise=False))
+# inversion(load_ref_img(image_path, contrast=contrast, add_noise=False))
+inversion(load_ref_img_grayscale(image_path, add_noise=True))
 
 # prompt = 'ancient ruins'
 prompt = 'modern building'
 # prompt = 'sky'
+
+direct_transfer_steps = 40
+decayed_transfer_steps = 22 # default: 20
 
 output_dir = './outputs/no_depth'
 os.makedirs(output_dir, exist_ok=True)
@@ -105,7 +124,7 @@ save_image_name = image_name.replace('.', '_')
 
 # generate illusion picture
 set_random_seed(6000)
-sample = sample_illusion_image(latent=load_inverted_noise(), direct_transfer_steps=40, decayed_transfer_steps=20, text_prompt=prompt)
+sample = sample_illusion_image(latent=load_inverted_noise(), direct_transfer_steps=direct_transfer_steps, decayed_transfer_steps=decayed_transfer_steps, text_prompt=prompt)
 sample = Image.fromarray(sample)
 sample.save(output_dir + f'/sample_{prompt}_test_{save_image_name}_contrast_{contrast}.jpg')
 # sample.show()

@@ -57,6 +57,21 @@ def load_ref_img(img_path, contrast=2., add_noise=False, noise_value=0.05):
     img = torchvision.transforms.ColorJitter(contrast=(contrast, contrast))(img)
     img = np.array(img)
     if len(img.shape) == 2:
+        print('Image is grayscale, stack the channels!')
+        img = np.stack([img, img, img], axis=-1)
+    img = (img.astype(np.float32) / 127.5) - 1.0           # -1 ~ 1
+    img_tensor = torch.from_numpy(img).permute(2, 0, 1)[None, ...].cuda()   # 1, 3, 512, 512
+    if add_noise:
+        noise = (torch.rand_like(img_tensor) - 0.5) / 0.5      # -1 ~ 1
+        img_tensor = (1 - noise_value) * img_tensor + noise_value * noise
+    return img_tensor
+
+
+def load_ref_img_grayscale(img_path, add_noise=False, noise_value=0.05):
+    img = Image.open(img_path).resize((H, W))
+    img = np.array(img)
+    if len(img.shape) == 2:
+        print('Image is grayscale, stack the channels!')
         img = np.stack([img, img, img], axis=-1)
     img = (img.astype(np.float32) / 127.5) - 1.0           # -1 ~ 1
     img_tensor = torch.from_numpy(img).permute(2, 0, 1)[None, ...].cuda()   # 1, 3, 512, 512
@@ -113,13 +128,14 @@ def encode_prompt(batch_size, prompt, tokenizer, text_encoder, device):
 
 
 # load a reference image and run inversion
-image_name = 'face1.jpg'
+# image_name = 'face1.jpg'
 # image_name = 'face2.jpg'
 # image_name = 'tum_white.png' # good results
 # image_name = 'binary_image_TUM.jpg'
 # image_name = 'black_dog.jpg'
 # image_name = 'yellow_dog.jpg'
 # image_name = 'depth_scene.png'
+image_name = 'binary_image_TUM.png'
 
 image_path = 'test_img/' + image_name
 
@@ -127,18 +143,24 @@ contrast = 2 # default value for face1 and face2
 # contrast = 1
 # contrast = 3
 
-inversion(load_ref_img(image_path, contrast=contrast, add_noise=False))
+# inversion(load_ref_img(image_path, contrast=contrast, add_noise=False))
+inversion(load_ref_img_grayscale(image_path, add_noise=True)) # need to add noise to prevent poor results, since the text are too sharp contrast / structural information
 
 # prompt = 'ancient ruins'
 # prompt = 'modern building'
 # prompt = 'sky'
 prompt = 'a photo of a japanese style living room'
+# prompt = 'a photo of a scientific style living room'
+
+direct_transfer_steps = 40
+decayed_transfer_steps = 22 # default: 20
 
 output_dir = './outputs/depth'
 os.makedirs(output_dir, exist_ok=True)
 save_image_name = image_name.replace('.', '_')
 
 depth_image = load_image('./test_img/depth_scene.png')
+# depth_image = load_image('./test_img/depth_tensor.png')
 depth_image = depth_image.resize((render_size, render_size), resample=0)
 depth_tensor = TF.to_tensor(depth_image).unsqueeze(0).to(device).to(dtype_half)
 
@@ -156,7 +178,7 @@ controlnet_cond_input = torch.cat([depth_tensor] * 2)
 
 # generate illusion picture
 set_random_seed(6000)
-sample = sample_illusion_image_depth(latent=load_inverted_noise(), text_prompt=prompt, text_embeddings=text_embeddings, diffusion_model=diffusion_model, controlnet=controlnet, controlnet_cond_input=controlnet_cond_input, direct_transfer_steps=40, decayed_transfer_steps=20)
+sample = sample_illusion_image_depth(latent=load_inverted_noise(), text_prompt=prompt, text_embeddings=text_embeddings, diffusion_model=diffusion_model, controlnet=controlnet, controlnet_cond_input=controlnet_cond_input, direct_transfer_steps=direct_transfer_steps, decayed_transfer_steps=decayed_transfer_steps)
 sample = Image.fromarray(sample)
 sample.save(output_dir + f'/sample_{prompt}_test_{save_image_name}_contrast_{contrast}.jpg')
 
