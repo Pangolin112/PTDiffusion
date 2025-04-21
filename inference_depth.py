@@ -86,11 +86,15 @@ def inversion(img_tensor, uncond, diffusion_model):
         os.remove('latent.py')
     encoder_posterior = model.encode_first_stage(img_tensor) # encode the image
     z = model.get_first_stage_encoding(encoder_posterior).detach() # .sample * scale_factor
+    print('z shape:', z.shape) #TODO same with the diffusers version, then the problem comes from sampler.encode step.
+    print('z min:', z.min())
+    print('z max:', z.max())
+    print('z mean:', z.mean())
     sampler.make_schedule(ddim_num_steps=encode_steps) # set ddim steps
     un_cond = {"c_crossattn": [model.get_learned_conditioning([''])]} 
     # latent, out = sampler.encode(x0=z, cond=un_cond, t_enc=encode_steps)
-    latent = sampler.encode_simple(x0=z, cond=un_cond, t_enc=encode_steps)
-    # latent = sampler.encode_diffusers(diffusion_model.to("cuda", torch.float16), img_tensor.to("cuda", torch.float16), uncond, encode_steps)
+    # latent = sampler.encode_simple(x0=z, cond=un_cond, t_enc=encode_steps)
+    latent = sampler.encode_diffusers(diffusion_model.to("cuda", torch.float16), img_tensor.to("cuda", torch.float16), uncond, encode_steps)
     print(latent.shape) # [1, 4, 64, 64]
     torch.save(latent, 'latent.pt')
     return latent
@@ -179,25 +183,25 @@ contrast = 2 # default value for face1 and face2
 # contrast = 3
 
 latents_ref_inversion = inversion(load_ref_img(image_path, contrast=contrast, add_noise=False), uncond, diffusion_model)
-print('latents_ref_inversion shape:', latents_ref_inversion.shape) # (1, 4, 64, 64)
-print('latents_ref_inversion min:', latents_ref_inversion.min())
-print('latents_ref_inversion max:', latents_ref_inversion.max())
-print('latents_ref_inversion mean:', latents_ref_inversion.mean())
+# print('latents_ref_inversion shape:', latents_ref_inversion.shape) # (1, 4, 64, 64)
+# print('latents_ref_inversion min:', latents_ref_inversion.min())
+# print('latents_ref_inversion max:', latents_ref_inversion.max())
+# print('latents_ref_inversion mean:', latents_ref_inversion.mean())
+
 # inversion(load_ref_img(image_path, contrast=contrast, add_noise=True))
 # inversion(load_ref_img_grayscale(image_path, add_noise=True)) # need to add noise to prevent poor results, since the text are too sharp contrast / structural information
 
 # save latents_ref_inversion using diffusers
 ref_sample = 1 / diffusion_model.vae.config.scaling_factor * latents_ref_inversion.clone().to(torch.float16).detach()
-# ref_sample = latents_ref_inversion.clone().detach()
-print('ref_sample shape:', ref_sample.shape) # (1, 4, 64, 64)
-print('ref_sample min:', ref_sample.min())
-print('ref_sample max:', ref_sample.max())
-print('ref_sample mean:', ref_sample.mean())
+# print('ref_sample shape:', ref_sample.shape) # (1, 4, 64, 64)
+# print('ref_sample min:', ref_sample.min())
+# print('ref_sample max:', ref_sample.max())
+# print('ref_sample mean:', ref_sample.mean())
 ref_image_ = diffusion_model.vae.decode(ref_sample).sample.to(dtype_half)
-print('ref_image_ shape:', ref_image_.shape) # (1, 4, 64, 64)
-print('ref_image_ min:', ref_image_.min())
-print('ref_image_ max:', ref_image_.max())
-print('ref_image_ mean:', ref_image_.mean())
+# print('ref_image_ shape:', ref_image_.shape) # (1, 4, 64, 64)
+# print('ref_image_ min:', ref_image_.min())
+# print('ref_image_ max:', ref_image_.max())
+# print('ref_image_ mean:', ref_image_.mean())
 save_image((ref_image_ / 2 + 0.5).clamp(0, 1), f'{output_dir}/test_{save_image_name}.png')
 
 # save ref image using the original model (the same with the first one)

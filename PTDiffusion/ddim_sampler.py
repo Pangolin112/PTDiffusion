@@ -462,17 +462,26 @@ class DDIM_Sampler(object):
         latents = pipeline.vae.config.scaling_factor * sample
 
         # 3. Iterative inversion
-        for t in tqdm(range(t_enc), desc='Encoding Image'):
-            # t = t - 1
-            # model predicts noise residual
-            model_output = pipeline.unet(latents, t, encoder_hidden_states=cond)
-            noise_pred = model_output.sample
+        alphas_cumprod      = torch.tensor(scheduler.alphas_cumprod,      device=pipeline.device)
+        alphas_cumprod_prev = torch.cat([
+            torch.tensor([1.0], device=pipeline.device),
+            alphas_cumprod[:-1]
+        ], dim=0)
 
-            # take one DDIM inversion step
-            prev = scheduler.step(
-                noise_pred, t, latents, return_dict=True
-            ).prev_sample
-            latents = prev
+        for i, t in tqdm(enumerate(scheduler.timesteps), desc='Encoding Image'):
+            i = i - 1
+
+            noise_pred = pipeline.unet(latents, t, encoder_hidden_states=cond).sample
+            # latents    = scheduler.step(noise_pred, t, latents).prev_sample
+
+            # grab α_t  and  α_{t-1}
+            alpha_next = alphas_cumprod[i]
+            alpha_prev = alphas_cumprod_prev[i]
+            xt_weighted         = (alpha_next / alpha_prev).sqrt() * latents
+            weighted_noise_pred = alpha_next.sqrt() * (
+                (1/alpha_next - 1).sqrt() - (1/alpha_prev - 1).sqrt()
+            ) * noise_pred
+            latents = xt_weighted + weighted_noise_pred
 
         return latents
 
