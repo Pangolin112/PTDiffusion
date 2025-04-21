@@ -95,12 +95,12 @@ def sample_illusion_image(latent, text_prompt, decode_steps=100, direct_transfer
 # load a reference image and run inversion
 # image_name = 'face1.jpg'
 # image_name = 'face2.jpg'
-# image_name = 'tum_white.png' # good results
+image_name = 'tum_white.png' # good results
 # image_name = 'binary_image_TUM.jpg'
 # image_name = 'black_dog.jpg'
 # image_name = 'yellow_dog.jpg'
 # image_name = 'depth_scene.png'
-image_name = 'binary_image_TUM.png'
+# image_name = 'binary_image_TUM.png'
 
 image_path = 'test_img/' + image_name
 
@@ -108,15 +108,15 @@ contrast = 2 # default value for face1 and face2
 # contrast = 1
 # contrast = 3
 
-# inversion(load_ref_img(image_path, contrast=contrast, add_noise=False))
-inversion(load_ref_img_grayscale(image_path, add_noise=True))
+inversion(load_ref_img(image_path, contrast=contrast, add_noise=True))
+# inversion(load_ref_img_grayscale(image_path, add_noise=True))
 
 # prompt = 'ancient ruins'
 prompt = 'modern building'
 # prompt = 'sky'
 
 direct_transfer_steps = 40
-decayed_transfer_steps = 22 # default: 20
+decayed_transfer_steps = 20 # default: 20
 
 output_dir = './outputs/no_depth'
 os.makedirs(output_dir, exist_ok=True)

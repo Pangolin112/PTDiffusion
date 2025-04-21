@@ -416,6 +416,66 @@ class DDIM_Sampler(object):
         if return_intermediates:
             out.update({'intermediates': intermediates})
         return x_next, out
+    
+
+    @torch.no_grad()
+    def encode_simple(self, x0, cond, t_enc):
+        num_reference_steps = self.ddim_timesteps.shape[0]
+
+        assert t_enc <= num_reference_steps
+        num_steps = t_enc
+
+        alphas_next = self.ddim_alphas[:num_steps]
+        alphas = torch.tensor(self.ddim_alphas_prev[:num_steps])
+
+        x_next = x0
+        for i in tqdm(range(num_steps), desc='Encoding Image'):  # 0, 1, 2, 3
+            t = torch.full((x0.shape[0],), i, device=self.model.device, dtype=torch.long)  # 0, 1, 2, 3
+            noise_pred = self.model.apply_model(x_next, t, cond, step=i, extract_or_replace=-1)  # x0->e0, x1->e1, x2->e2, ...
+
+            xt_weighted = (alphas_next[i] / alphas[i]).sqrt() * x_next
+            weighted_noise_pred = alphas_next[i].sqrt() * ((1 / alphas_next[i] - 1).sqrt() - (1 / alphas[i] - 1).sqrt()) * noise_pred
+            x_next = xt_weighted + weighted_noise_pred
+
+        return x_next
+
+
+    @torch.no_grad()
+    def encode_diffusers(
+        self, 
+        pipeline,
+        image: torch.FloatTensor,
+        cond,
+        t_enc: int
+    ):
+        # 1. Prepare scheduler
+        scheduler = pipeline.scheduler
+        scheduler.set_timesteps(t_enc, device=pipeline.device)
+
+        # 2. Encode image through VAE once
+        # latents = pipeline.vae.encode(image).latent_dist.sample() * pipeline.vae.config.scaling_factor
+        h = pipeline.vae.encoder(image)
+        moments = pipeline.vae.quant_conv(h)
+        mean, logvar = torch.chunk(moments, 2, dim=1)
+        std = torch.exp(0.5 * logvar)
+        sample = mean + std * torch.randn_like(mean)
+        latents = pipeline.vae.config.scaling_factor * sample
+
+        # 3. Iterative inversion
+        for t in tqdm(range(t_enc), desc='Encoding Image'):
+            # t = t - 1
+            # model predicts noise residual
+            model_output = pipeline.unet(latents, t, encoder_hidden_states=cond)
+            noise_pred = model_output.sample
+
+            # take one DDIM inversion step
+            prev = scheduler.step(
+                noise_pred, t, latents, return_dict=True
+            ).prev_sample
+            latents = prev
+
+        return latents
+
 
     @torch.no_grad()
     def stochastic_encode(self, x0, t, use_original_steps=False, noise=None):

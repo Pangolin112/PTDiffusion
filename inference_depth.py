@@ -81,19 +81,23 @@ def load_ref_img_grayscale(img_path, add_noise=False, noise_value=0.05):
     return img_tensor
 
 
-def inversion(img_tensor):
+def inversion(img_tensor, uncond, diffusion_model):
     if os.path.exists('latent.py'):
         os.remove('latent.py')
-    encoder_posterior = model.encode_first_stage(img_tensor)
-    z = model.get_first_stage_encoding(encoder_posterior).detach()
-    sampler.make_schedule(ddim_num_steps=encode_steps)
-    un_cond = {"c_crossattn": [model.get_learned_conditioning([''])]}
-    latent, out = sampler.encode(x0=z, cond=un_cond, t_enc=encode_steps)
+    encoder_posterior = model.encode_first_stage(img_tensor) # encode the image
+    z = model.get_first_stage_encoding(encoder_posterior).detach() # .sample * scale_factor
+    sampler.make_schedule(ddim_num_steps=encode_steps) # set ddim steps
+    un_cond = {"c_crossattn": [model.get_learned_conditioning([''])]} 
+    # latent, out = sampler.encode(x0=z, cond=un_cond, t_enc=encode_steps)
+    latent = sampler.encode_simple(x0=z, cond=un_cond, t_enc=encode_steps)
+    # latent = sampler.encode_diffusers(diffusion_model.to("cuda", torch.float16), img_tensor.to("cuda", torch.float16), uncond, encode_steps)
+    print(latent.shape) # [1, 4, 64, 64]
     torch.save(latent, 'latent.pt')
+    return latent
 
 
 def load_inverted_noise():
-    return torch.load('latent.pt').cuda()
+    return torch.load('latent.pt').cuda().to(torch.float32)
 
 
 def sample_illusion_image_depth(latent, text_prompt, text_embeddings, diffusion_model, controlnet, controlnet_cond_input, decode_steps=100, direct_transfer_steps=60, decayed_transfer_steps=0,
@@ -127,37 +131,83 @@ def encode_prompt(batch_size, prompt, tokenizer, text_encoder, device):
     return torch.cat([uncond_embeddings, text_embeddings])
 
 
-# load a reference image and run inversion
-# image_name = 'face1.jpg'
-# image_name = 'face2.jpg'
-# image_name = 'tum_white.png' # good results
-# image_name = 'binary_image_TUM.jpg'
-# image_name = 'black_dog.jpg'
-# image_name = 'yellow_dog.jpg'
-# image_name = 'depth_scene.png'
-image_name = 'binary_image_TUM.png'
-
-image_path = 'test_img/' + image_name
-
-contrast = 2 # default value for face1 and face2
-# contrast = 1
-# contrast = 3
-
-# inversion(load_ref_img(image_path, contrast=contrast, add_noise=False))
-inversion(load_ref_img_grayscale(image_path, add_noise=True)) # need to add noise to prevent poor results, since the text are too sharp contrast / structural information
-
 # prompt = 'ancient ruins'
 # prompt = 'modern building'
 # prompt = 'sky'
 prompt = 'a photo of a japanese style living room'
 # prompt = 'a photo of a scientific style living room'
 
-direct_transfer_steps = 40
-decayed_transfer_steps = 22 # default: 20
+def encode_prompt_with_a_prompt_and_null(batch_size, prompt, tokenizer, text_encoder, device, particle_num_vsd):
+    text_input = tokenizer(
+        [prompt], padding="max_length", max_length=tokenizer.model_max_length, truncation=True, return_tensors="pt"
+    )
+    with torch.no_grad():
+        text_embeddings = text_encoder(text_input.input_ids.to(device))[0]
+
+    max_length = text_input.input_ids.shape[-1]
+    uncond_input = tokenizer(
+        [""] * batch_size, padding="max_length", max_length=max_length, truncation=True, return_tensors="pt"
+    )
+    with torch.no_grad():
+        uncond_embeddings = text_encoder(uncond_input.input_ids.to(device))[0]
+
+    return torch.cat([uncond_embeddings[:particle_num_vsd], text_embeddings[:particle_num_vsd]])
+
+batch_size = 1
+text_embeddings_2 = encode_prompt_with_a_prompt_and_null(batch_size, prompt, diffusion_model.tokenizer, diffusion_model.text_encoder, device, 1)
+uncond, cond = text_embeddings_2.chunk(2)
+
+# load a reference image and run inversion
+image_name = 'face1.jpg'
+# image_name = 'face2.jpg'
+# image_name = 'tum_white.png' # good results
+# image_name = 'binary_image_TUM.jpg'
+# image_name = 'black_dog.jpg'
+# image_name = 'yellow_dog.jpg'
+# image_name = 'depth_scene.png'
+# image_name = 'binary_image_TUM.png'
+
+save_image_name = image_name.replace('.', '_')
+
+image_path = 'test_img/' + image_name
 
 output_dir = './outputs/depth'
 os.makedirs(output_dir, exist_ok=True)
-save_image_name = image_name.replace('.', '_')
+
+contrast = 2 # default value for face1 and face2
+# contrast = 1
+# contrast = 3
+
+latents_ref_inversion = inversion(load_ref_img(image_path, contrast=contrast, add_noise=False), uncond, diffusion_model)
+print('latents_ref_inversion shape:', latents_ref_inversion.shape) # (1, 4, 64, 64)
+print('latents_ref_inversion min:', latents_ref_inversion.min())
+print('latents_ref_inversion max:', latents_ref_inversion.max())
+print('latents_ref_inversion mean:', latents_ref_inversion.mean())
+# inversion(load_ref_img(image_path, contrast=contrast, add_noise=True))
+# inversion(load_ref_img_grayscale(image_path, add_noise=True)) # need to add noise to prevent poor results, since the text are too sharp contrast / structural information
+
+# save latents_ref_inversion using diffusers
+ref_sample = 1 / diffusion_model.vae.config.scaling_factor * latents_ref_inversion.clone().to(torch.float16).detach()
+# ref_sample = latents_ref_inversion.clone().detach()
+print('ref_sample shape:', ref_sample.shape) # (1, 4, 64, 64)
+print('ref_sample min:', ref_sample.min())
+print('ref_sample max:', ref_sample.max())
+print('ref_sample mean:', ref_sample.mean())
+ref_image_ = diffusion_model.vae.decode(ref_sample).sample.to(dtype_half)
+print('ref_image_ shape:', ref_image_.shape) # (1, 4, 64, 64)
+print('ref_image_ min:', ref_image_.min())
+print('ref_image_ max:', ref_image_.max())
+print('ref_image_ mean:', ref_image_.mean())
+save_image((ref_image_ / 2 + 0.5).clamp(0, 1), f'{output_dir}/test_{save_image_name}.png')
+
+# save ref image using the original model (the same with the first one)
+ref_sample = torch.clip(model.decode_first_stage(latents_ref_inversion.to(torch.float32)), min=-1, max=1).squeeze()
+ref_sample = (einops.rearrange(ref_sample, 'c h w -> h w c') * 127.5 + 127.5).cpu().numpy().astype(np.uint8)
+ref_sample = Image.fromarray(ref_sample)
+ref_sample.save(output_dir + f'/test_{save_image_name}_ref_sample.jpg')
+
+direct_transfer_steps = 40
+decayed_transfer_steps = 20 # default: 20
 
 depth_image = load_image('./test_img/depth_scene.png')
 # depth_image = load_image('./test_img/depth_tensor.png')
@@ -177,8 +227,9 @@ unet_cross_attention_kwargs = {'scale': 0}
 controlnet_cond_input = torch.cat([depth_tensor] * 2)
 
 # generate illusion picture
+exponent = 1.0 # default: 0.5
 set_random_seed(6000)
-sample = sample_illusion_image_depth(latent=load_inverted_noise(), text_prompt=prompt, text_embeddings=text_embeddings, diffusion_model=diffusion_model, controlnet=controlnet, controlnet_cond_input=controlnet_cond_input, direct_transfer_steps=direct_transfer_steps, decayed_transfer_steps=decayed_transfer_steps)
+sample = sample_illusion_image_depth(latent=load_inverted_noise(), text_prompt=prompt, text_embeddings=text_embeddings, diffusion_model=diffusion_model, controlnet=controlnet, controlnet_cond_input=controlnet_cond_input, direct_transfer_steps=direct_transfer_steps, decayed_transfer_steps=decayed_transfer_steps, exponent=exponent)
 sample = Image.fromarray(sample)
 sample.save(output_dir + f'/sample_{prompt}_test_{save_image_name}_contrast_{contrast}.jpg')
 
