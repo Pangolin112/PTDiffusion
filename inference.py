@@ -123,7 +123,7 @@ os.makedirs(output_dir, exist_ok=True)
 save_image_name = image_name.replace('.', '_')
 
 # generate illusion picture
-set_random_seed(6000)
+set_random_seed(42)
 sample = sample_illusion_image(latent=load_inverted_noise(), direct_transfer_steps=direct_transfer_steps, decayed_transfer_steps=decayed_transfer_steps, text_prompt=prompt)
 sample = Image.fromarray(sample)
 sample.save(output_dir + f'/sample_{prompt}_test_{save_image_name}_contrast_{contrast}.jpg')

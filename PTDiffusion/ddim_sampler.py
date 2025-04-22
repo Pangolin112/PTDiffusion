@@ -196,6 +196,8 @@ class DDIM_Sampler(object):
         sigma_t = torch.full((b, 1, 1, 1), sigmas[index], device=device)
         sqrt_one_minus_at = torch.full((b, 1, 1, 1), sqrt_one_minus_alphas[index], device=device)
 
+        # print('t:', t, 'index:', index, 'alpha:', alphas[index], 'alpha_prev:', alphas_prev[index], 'sigma:', sigmas[index], 'sqrt_one_minus_alpha:', sqrt_one_minus_alphas[index])
+
         if unconditional_conditioning is None or unconditional_guidance_scale == 1.:
             model_output = self.model.apply_model(x, t, c, step=index)
         else:
@@ -234,6 +236,7 @@ class DDIM_Sampler(object):
 
         # current prediction for x_0
         if self.model.parameterization != "v":
+            # print("eps")
             pred_x0 = (x - sqrt_one_minus_at * e_t) / a_t.sqrt()
         else:
             pred_x0 = self.model.predict_start_from_z_and_v(x, t, model_output)
@@ -430,8 +433,11 @@ class DDIM_Sampler(object):
 
         x_next = x0
         for i in tqdm(range(num_steps), desc='Encoding Image'):  # 0, 1, 2, 3
+            # print(i)
             t = torch.full((x0.shape[0],), i, device=self.model.device, dtype=torch.long)  # 0, 1, 2, 3
             noise_pred = self.model.apply_model(x_next, t, cond, step=i, extract_or_replace=-1)  # x0->e0, x1->e1, x2->e2, ...
+            
+            # print('t:', t, 'alphas:', alphas[i], 'alphas_next:', alphas_next[i])
 
             xt_weighted = (alphas_next[i] / alphas[i]).sqrt() * x_next
             weighted_noise_pred = alphas_next[i].sqrt() * ((1 / alphas_next[i] - 1).sqrt() - (1 / alphas[i] - 1).sqrt()) * noise_pred
@@ -462,25 +468,20 @@ class DDIM_Sampler(object):
         latents = pipeline.vae.config.scaling_factor * sample
 
         # 3. Iterative inversion
-        alphas_cumprod      = torch.tensor(scheduler.alphas_cumprod,      device=pipeline.device)
-        alphas_cumprod_prev = torch.cat([
-            torch.tensor([1.0], device=pipeline.device),
-            alphas_cumprod[:-1]
-        ], dim=0)
+        encode_iterator = tqdm(scheduler.timesteps, desc='Encoding Image', total=t_enc)
 
-        for i, t in tqdm(enumerate(scheduler.timesteps), desc='Encoding Image'):
-            i = i - 1
+        alphas_cumprod = scheduler.alphas_cumprod.to(pipeline.device)
+        for idx, t in enumerate(encode_iterator):
+            # t: 1000, 999, 998, …, 1
+            noise_pred = pipeline.unet(latents, 1000 - t, encoder_hidden_states=cond).sample # 0 ~ 999
 
-            noise_pred = pipeline.unet(latents, t, encoder_hidden_states=cond).sample
-            # latents    = scheduler.step(noise_pred, t, latents).prev_sample
+            alphas = alphas_cumprod[1000 - t - 1] if 1000 - t - 1 >= 0 else alphas_cumprod[1000 - t]
+            alphas_next = alphas_cumprod[1000 - t]
+            # print('t:', 1000 - t, 'alphas:', alphas, 'alphas_next:', alphas_next)
 
-            # grab α_t  and  α_{t-1}
-            alpha_next = alphas_cumprod[i]
-            alpha_prev = alphas_cumprod_prev[i]
-            xt_weighted         = (alpha_next / alpha_prev).sqrt() * latents
-            weighted_noise_pred = alpha_next.sqrt() * (
-                (1/alpha_next - 1).sqrt() - (1/alpha_prev - 1).sqrt()
-            ) * noise_pred
+            xt_weighted         = (alphas_next / alphas).sqrt() * latents
+            weighted_noise_pred = alphas_next.sqrt() * ((1 / alphas_next - 1).sqrt() - (1 / alphas - 1).sqrt()) * noise_pred
+                                                                
             latents = xt_weighted + weighted_noise_pred
 
         return latents

@@ -2,7 +2,8 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from PTDiffusion.ddim_sampler import DDIM_Sampler
-
+from PIL import Image
+import einops
 
 class Phase_Guided_Sampler(DDIM_Sampler):
 
@@ -34,7 +35,7 @@ class Phase_Guided_Sampler(DDIM_Sampler):
         return x_dec
 
     @torch.no_grad()
-    def decode_with_phase_substitution(self, ref_latent, cond, t_dec, unconditional_guidance_scale,
+    def decode_with_phase_substitution(self, output_dir, ref_latent, cond, t_dec, unconditional_guidance_scale,
                                        unconditional_conditioning, use_original_steps=False, direct_transfer_steps=55,
                                        blending_ratio=0,
                                        decayed_transfer_steps=0, async_ahead_steps=0, exponent=0.5):
@@ -95,6 +96,11 @@ class Phase_Guided_Sampler(DDIM_Sampler):
             else:
                 ref_latent = ref_a_prev.sqrt() * ref_pred_x0 + (1. - ref_a_prev).sqrt() * ref_e_t   # t-1
                 x_dec = self.phase_substitute(ref_latent=ref_latent, x_dec=x_dec, alpha=blending_ratio)   # t-1
+        # save the intermediate result direct transfer
+        x_sample = torch.clip(self.model.decode_first_stage(x_dec), min=-1, max=1).squeeze()
+        x_sample = (einops.rearrange(x_sample, 'c h w -> h w c') * 127.5 + 127.5).cpu().numpy().astype(np.uint8)
+        x_sample = Image.fromarray(x_sample)
+        x_sample.save(output_dir + f'/sample_direct_transfer.jpg')
 
         weights = torch.linspace(0, 1, decayed_transfer_steps) ** exponent
 
@@ -128,6 +134,11 @@ class Phase_Guided_Sampler(DDIM_Sampler):
             else:
                 ref_latent = ref_a_prev.sqrt() * ref_pred_x0 + (1. - ref_a_prev).sqrt() * ref_e_t  # t-1
                 x_dec = self.phase_substitute(ref_latent=ref_latent, x_dec=x_dec, alpha=weights[i])  # t-1
+        # save the intermediate result decayed transfer
+        x_sample = torch.clip(self.model.decode_first_stage(x_dec), min=-1, max=1).squeeze()
+        x_sample = (einops.rearrange(x_sample, 'c h w -> h w c') * 127.5 + 127.5).cpu().numpy().astype(np.uint8)
+        x_sample = Image.fromarray(x_sample)
+        x_sample.save(output_dir + f'/sample_decayed_transfer.jpg')
 
         for i, step in enumerate(refining_iterator):
             index = refining_steps - i - 1  # t
@@ -137,7 +148,7 @@ class Phase_Guided_Sampler(DDIM_Sampler):
                                        use_original_steps=use_original_steps,
                                        unconditional_guidance_scale=unconditional_guidance_scale,
                                        unconditional_conditioning=unconditional_conditioning)
-    
+
         return x_dec
     
 
@@ -151,6 +162,7 @@ class Phase_Guided_Sampler(DDIM_Sampler):
         timesteps = timesteps[:t_dec]
 
         time_range = np.flip(timesteps)
+        print("time_range: ", time_range)
         total_steps = timesteps.shape[0]
         print(f"Running DDIM Sampling with {total_steps} timesteps")
 
@@ -175,6 +187,7 @@ class Phase_Guided_Sampler(DDIM_Sampler):
 
         for i, step in enumerate(direct_transfer_iterator):
             index = total_steps - i - 1  # t
+            # print(index)
             ts = torch.full((ref_latent.shape[0],), step, device=ref_latent.device, dtype=torch.long)  # t
 
             ref_a_prev, ref_pred_x0, ref_e_t = self.p_sample_ddim(ref_latent, unconditional_conditioning, ts,
@@ -245,6 +258,7 @@ class Phase_Guided_Sampler(DDIM_Sampler):
 
         for i, step in enumerate(refining_iterator):
             index = refining_steps - i - 1  # t
+            print(index)
             ts = torch.full((ref_latent.shape[0],), step, device=ref_latent.device, dtype=torch.long)  # t
             # print("x_dec shape: ", x_dec.shape)
             x_dec = self.p_sample_ddim_depth(text_embeddings, diffusion_model, controlnet, controlnet_cond_input, x_dec, cond, ts, index=index,
